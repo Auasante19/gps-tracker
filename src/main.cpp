@@ -23,9 +23,8 @@
 #define APN_PASS         ""
 
 // Supabase credentials
-#define SERVER_HOST      "100.100.107.5"
-#define SERVER_URL       "http://100.100.107.5:3000/api/location"
-
+#define SERVER_HOST   "diplomatic-alignment-production-ebb5.up.railway.app"
+#define SERVER_URL    "https://diplomatic-alignment-production-ebb5.up.railway.app/api/location"
 // Device ID
 #define DEVICE_ID        "tracker_01"
 
