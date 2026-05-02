@@ -1,5 +1,6 @@
 // IMPORTANT: Define modem model BEFORE including TinyGSM
 #define TINY_GSM_MODEM_SIM7600
+#define TINY_GSM_USE_SSL
 
 #include <Arduino.h>
 #include <TinyGsmClient.h>
@@ -29,7 +30,7 @@
 #define DEVICE_ID        "tracker_01"
 
 // How often to send GPS data (milliseconds)
-#define UPDATE_INTERVAL  10000  // 10 seconds
+#define UPDATE_INTERVAL  300000  // 5 minutes
 
 // ============================================================
 //   PIN DEFINITIONS for LilyGO SIM7600E
@@ -180,8 +181,6 @@ void testGPS() {
 //   FUNCTION: Send GPS data to Supabase via LTE
 // ============================================================
 void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites) {
-  HttpClient http(gsmClient, SERVER_HOST, 3000);
-
   JsonDocument doc;
   doc["device_id"]  = DEVICE_ID;
   doc["latitude"]   = lat;
@@ -193,28 +192,92 @@ void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites)
   String body;
   serializeJson(doc, body);
 
-  Serial.println("[LTE] Sending: " + body);
+  Serial.println("[LTE] Sending via AT HTTPS: " + body);
 
-  http.beginRequest();
-  http.post("/api/location");
-  http.sendHeader("Host",           SERVER_HOST);
-  http.sendHeader("Content-Type",   "application/json");
-  http.sendHeader("Content-Length", String(body.length()));
-  http.beginBody();
-  http.print(body);
-  http.endRequest();
+  // Close any previous HTTP session
+  SerialAT.println("AT+HTTPTERM");
+  delay(1000);
+  while (SerialAT.available()) SerialAT.read();
 
-  int statusCode = http.responseStatusCode();
-  String responseBody = http.responseBody();
-  Serial.println("[LTE] Status: " + String(statusCode));
-  Serial.println("[LTE] Response: " + responseBody);
+  // Initialize HTTP
+  SerialAT.println("AT+HTTPINIT");
+  delay(1000);
+  while (SerialAT.available()) SerialAT.read();
+
+  // Set SSL
+  SerialAT.println("AT+HTTPSSL=1");
+  delay(500);
+  while (SerialAT.available()) SerialAT.read();
+
+  // Set URL
+  SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/location\"");
+  delay(500);
+  while (SerialAT.available()) SerialAT.read();
+
+  // Set content type
+  SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
+  delay(500);
+  while (SerialAT.available()) SerialAT.read();
+
+  // Set data length and timeout
+  SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
+  delay(500);
+
+  // Wait for DOWNLOAD prompt
+  String prompt = "";
+  long timeout = millis() + 5000;
+  while (millis() < timeout) {
+    if (SerialAT.available()) {
+      prompt += (char)SerialAT.read();
+      if (prompt.indexOf("DOWNLOAD") >= 0) break;
+    }
+  }
+  Serial.println("[LTE] Prompt: " + prompt);
+
+  // Send JSON body
+  SerialAT.print(body);
+  delay(2000);
+
+  // Execute POST
+  SerialAT.println("AT+HTTPACTION=1");
+  delay(500);
+
+  // Wait for response
+  String response = "";
+  timeout = millis() + 10000;
+  while (millis() < timeout) {
+    if (SerialAT.available()) {
+      response += (char)SerialAT.read();
+      if (response.indexOf("+HTTPACTION") >= 0) break;
+    }
+  }
+  Serial.println("[LTE] Response: " + response);
+
+  // Read response body
+  SerialAT.println("AT+HTTPREAD");
+  delay(1000);
+  String responseBody = "";
+  timeout = millis() + 3000;
+  while (millis() < timeout) {
+    if (SerialAT.available()) {
+      responseBody += (char)SerialAT.read();
+    }
+  }
+  Serial.println("[LTE] Body: " + responseBody);
+
+  // Terminate HTTP
+  SerialAT.println("AT+HTTPTERM");
+  delay(500);
+  while (SerialAT.available()) SerialAT.read();
 }
 // ============================================================
 //   FUNCTION: Send GPS data to Supabase via WiFi
 // ============================================================
 void sendViaWiFi(float lat, float lng, float spd, float altitude, int satellites) {
-  WiFiClient client;
-  HttpClient http(client, SERVER_HOST, 3000);
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
 
   JsonDocument doc;
   doc["device_id"]  = DEVICE_ID;
@@ -231,7 +294,7 @@ void sendViaWiFi(float lat, float lng, float spd, float altitude, int satellites
 
   http.beginRequest();
   http.post("/api/location");
-  http.sendHeader("Host",           SERVER_HOST);
+  http.sendHeader("Host",           "diplomatic-alignment-production-ebb5.up.railway.app");
   http.sendHeader("Content-Type",   "application/json");
   http.sendHeader("Content-Length", String(body.length()));
   http.beginBody();
@@ -274,6 +337,140 @@ enableGPS();
 testGPS();
 }
 // ============================================================
+//   FUNCTION: Scan WiFi and send for trilateration
+// ============================================================
+void sendWiFiTrilateration() {
+  Serial.println("[WiFi] Starting WiFi scan for trilateration...");
+  
+  // Turn on WiFi just for scanning (even if we're using LTE for data)
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(1000);
+
+  Serial.println("[WiFi] Scanning for anchor networks...");
+  int networksFound = WiFi.scanNetworks();
+  
+  if (networksFound == 0) {
+    Serial.println("[WiFi] No networks found");
+    return;
+  }
+
+  Serial.println("[WiFi] Found " + String(networksFound) + " networks");
+
+  // Build JSON with all found networks
+  JsonDocument doc;
+  doc["device_id"] = DEVICE_ID;
+  JsonArray networks = doc["networks"].to<JsonArray>();
+
+  int matchCount = 0;
+  for (int i = 0; i < networksFound; i++) {
+    String ssid = WiFi.SSID(i);
+    int rssi    = WiFi.RSSI(i);
+
+    // Only include our known anchor networks
+    if (ssid == "MTN_4G_E09BD1" || ssid == "Tenda_030398") {
+      JsonObject network = networks.add<JsonObject>();
+      network["ssid"] = ssid;
+      network["rssi"] = rssi;
+      matchCount++;
+      Serial.println("[WiFi] Found anchor: " + ssid + " RSSI: " + String(rssi));
+    }
+  }
+
+  WiFi.scanDelete();
+
+  if (matchCount == 0) {
+    Serial.println("[WiFi] No anchor networks found in scan");
+    return;
+  }
+
+  String body;
+  serializeJson(doc, body);
+  Serial.println("[WiFi] Sending trilateration data: " + body);
+
+  // Send via LTE if available otherwise WiFi
+  if (useLTE) {
+    // Use AT command HTTP to send trilateration data via LTE
+    SerialAT.println("AT+HTTPTERM");
+    delay(500);
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+HTTPINIT");
+    delay(1000);
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+HTTPSSL=1");
+    delay(500);
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/wifi-location\"");
+    delay(500);
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
+    delay(500);
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
+    delay(500);
+
+    String prompt = "";
+    long timeout = millis() + 5000;
+    while (millis() < timeout) {
+      if (SerialAT.available()) {
+        prompt += (char)SerialAT.read();
+        if (prompt.indexOf("DOWNLOAD") >= 0) break;
+      }
+    }
+
+    SerialAT.print(body);
+    delay(2000);
+
+    SerialAT.println("AT+HTTPACTION=1");
+    delay(500);
+
+    String httpResponse = "";
+    timeout = millis() + 10000;
+    while (millis() < timeout) {
+      if (SerialAT.available()) {
+        httpResponse += (char)SerialAT.read();
+        if (httpResponse.indexOf("+HTTPACTION") >= 0) break;
+      }
+    }
+    Serial.println("[WiFi-Tri] LTE Response: " + httpResponse);
+
+    SerialAT.println("AT+HTTPTERM");
+    delay(500);
+    while (SerialAT.available()) SerialAT.read();
+
+  } else if (useWiFi) {
+    // Reconnect to WiFi for sending
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      attempts++;
+    }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
+
+    http.beginRequest();
+    http.post("/api/wifi-location");
+    http.sendHeader("Host",           "diplomatic-alignment-production-ebb5.up.railway.app");
+    http.sendHeader("Content-Type",   "application/json");
+    http.sendHeader("Content-Length", String(body.length()));
+    http.beginBody();
+    http.print(body);
+    http.endRequest();
+
+    int statusCode = http.responseStatusCode();
+    Serial.println("[WiFi-Tri] Status: " + String(statusCode));
+    Serial.println("[WiFi-Tri] Response: " + http.responseBody());
+  }
+}
+// ============================================================
 //   LOOP
 // ============================================================
 void loop() {
@@ -288,15 +485,12 @@ void loop() {
 
   Serial.println("[MODEM] " + response);
 
-  // Parse the +CGPSINFO response
   if (response.indexOf("+CGPSINFO:") >= 0 && response.indexOf(",,,,") == -1) {
     
-    // Extract the data line
     int start = response.indexOf("+CGPSINFO:") + 10;
     String data = response.substring(start);
     data.trim();
 
-    // Split by comma
     int idx = 0;
     String parts[10];
     for (int i = 0; i < 10; i++) {
@@ -310,39 +504,36 @@ void loop() {
     }
 
     // Convert NMEA to decimal degrees
-    // Latitude: DDMM.MMMMMM
     float rawLat = parts[0].toFloat();
     int latDeg   = (int)(rawLat / 100);
     float latMin = rawLat - (latDeg * 100);
     float lat    = latDeg + (latMin / 60.0);
     if (parts[1] == "S") lat = -lat;
 
-    // Longitude: DDDMM.MMMMMM
     float rawLng = parts[2].toFloat();
     int lngDeg   = (int)(rawLng / 100);
     float lngMin = rawLng - (lngDeg * 100);
     float lng    = lngDeg + (lngMin / 60.0);
     if (parts[3] == "W") lng = -lng;
 
-    float speed    = parts[7].toFloat(); // speed in km/h
-    float altitude = parts[6].toFloat(); // altitude in metres
+    float speed    = parts[7].toFloat();
+    float altitude = parts[6].toFloat();
 
     Serial.printf("[GPS] Lat: %.6f, Lng: %.6f, Speed: %.1f km/h, Alt: %.1f m\n",
                   lat, lng, speed, altitude);
 
-    // Send to Supabase
+    // GPS fix available — send via LTE or WiFi
     if (useLTE) {
       sendViaLTE(lat, lng, speed, altitude, 0);
     } else if (useWiFi) {
       sendViaWiFi(lat, lng, speed, altitude, 0);
-    } else {
-      Serial.println("[NET] No connection available");
     }
 
   } else {
-    Serial.println("[GPS] No fix yet...");
+    // No GPS fix — fall back to WiFi trilateration
+    Serial.println("[GPS] No fix — trying WiFi trilateration...");
+    sendWiFiTrilateration();
   }
 
-  // Wait before next update
   delay(UPDATE_INTERVAL);
 }
