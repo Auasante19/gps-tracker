@@ -1,6 +1,6 @@
 // IMPORTANT: Define modem model BEFORE including TinyGSM
 #define TINY_GSM_MODEM_SIM7600
-#define TINY_GSM_USE_SSL
+#define TINY_GSM_RX_BUFFER 1024
 
 #include <Arduino.h>
 #include <TinyGsmClient.h>
@@ -9,6 +9,8 @@
 #include <TinyGPSPlus.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <SSLClientESP32.h>
+#include <sys/time.h>
 
 // ============================================================
 //   CONFIGURATION — fill in your details here
@@ -26,6 +28,41 @@
 // Supabase credentials
 #define SERVER_HOST   "diplomatic-alignment-production-ebb5.up.railway.app"
 #define SERVER_URL    "https://diplomatic-alignment-production-ebb5.up.railway.app/api/location"
+
+static const char SERVER_ROOT_CA[] PROGMEM = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+)EOF";
+
 // Device ID
 #define DEVICE_ID        "tracker_01"
 
@@ -51,12 +88,66 @@ HardwareSerial SerialGPS(2);  // UART2 for GPS
 
 TinyGsm        modem(SerialAT);
 TinyGsmClient  gsmClient(modem);
+SSLClientESP32 lteSslClient(&gsmClient);
 TinyGPSPlus    gps;
 
 bool useLTE  = false;
 bool useWiFi = false;
 
 unsigned long lastUpdate = 0;
+
+// ============================================================
+//   FUNCTION: Convert UTC date to Unix epoch days
+// ============================================================
+long daysFromCivil(int year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = (unsigned)(year - era * 400);
+  const unsigned doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + (long)doe - 719468L;
+}
+
+// ============================================================
+//   FUNCTION: Sync ESP32 clock from SIM7600 network time
+// ============================================================
+bool syncEspClockFromModem() {
+  Serial.println("[TIME] Syncing modem clock via NTP...");
+  byte ntpStatus = modem.NTPServerSync("pool.ntp.org", 0);
+  Serial.println("[TIME] Modem NTP: " + modem.ShowNTPError(ntpStatus));
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  float timezone = 0;
+
+  if (!modem.getNetworkTime(&year, &month, &day, &hour, &minute, &second, &timezone)) {
+    Serial.println("[TIME] Could not read modem network time");
+    return false;
+  }
+
+  if (year < 2024 || month < 1 || month > 12 || day < 1 || day > 31) {
+    Serial.printf("[TIME] Ignoring invalid modem time: %04d-%02d-%02d %02d:%02d:%02d TZ %.2f\n",
+                  year, month, day, hour, minute, second, timezone);
+    return false;
+  }
+
+  long epoch = daysFromCivil(year, month, day) * 86400L +
+               hour * 3600L + minute * 60L + second -
+               (long)(timezone * 3600.0f);
+
+  struct timeval tv;
+  tv.tv_sec = (time_t)epoch;
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+
+  Serial.printf("[TIME] ESP32 clock set: %04d-%02d-%02d %02d:%02d:%02d TZ %.2f\n",
+                year, month, day, hour, minute, second, timezone);
+  return true;
+}
 
 // ============================================================
 //   FUNCTION: Power on the SIM7600 modem
@@ -100,6 +191,7 @@ bool connectLTE() {
   }
 
   Serial.println("[LTE] Connected! IP: " + modem.localIP().toString());
+  syncEspClockFromModem();
   return true;
 }
 
@@ -178,6 +270,70 @@ void testGPS() {
   }
 }
 // ============================================================
+//   FUNCTION: Send JSON over LTE using ESP32 mbedTLS
+// ============================================================
+bool postJsonViaLTETls(const char* path, const String& body, const char* label) {
+  Serial.printf("[%s] Connecting TLS to %s:443\n", label, SERVER_HOST);
+
+  lteSslClient.stop();
+  lteSslClient.setClient(&gsmClient);
+  lteSslClient.setCACert(SERVER_ROOT_CA);
+  lteSslClient.setHandshakeTimeout(45);
+
+  if (!lteSslClient.connect(SERVER_HOST, 443)) {
+    char err[128] = {0};
+    int code = lteSslClient.lastError(err, sizeof(err));
+    Serial.printf("[%s] TLS connect failed: %d %s\n", label, code, err);
+    lteSslClient.stop();
+    return false;
+  }
+
+  Serial.printf("[%s] TLS connected, sending HTTPS POST %s\n", label, path);
+  lteSslClient.print("POST ");
+  lteSslClient.print(path);
+  lteSslClient.print(" HTTP/1.1\r\n");
+  lteSslClient.print("Host: ");
+  lteSslClient.print(SERVER_HOST);
+  lteSslClient.print("\r\n");
+  lteSslClient.print("Content-Type: application/json\r\n");
+  lteSslClient.print("Connection: close\r\n");
+  lteSslClient.print("Content-Length: ");
+  lteSslClient.print(body.length());
+  lteSslClient.print("\r\n\r\n");
+  lteSslClient.print(body);
+
+  String response;
+  unsigned long deadline = millis() + 30000;
+  unsigned long lastByteAt = millis();
+
+  while (millis() < deadline) {
+    while (lteSslClient.available()) {
+      char c = (char)lteSslClient.read();
+      response += c;
+      lastByteAt = millis();
+    }
+
+    if (!lteSslClient.connected() && !lteSslClient.available()) break;
+    if (response.length() > 0 && millis() - lastByteAt > 3000) break;
+    delay(10);
+  }
+
+  lteSslClient.stop();
+
+  Serial.printf("[%s] HTTPS response:\n", label);
+  Serial.println(response.length() ? response : "(no response)");
+
+  int status = 0;
+  int statusStart = response.indexOf("HTTP/1.");
+  if (statusStart >= 0) {
+    int codeStart = response.indexOf(' ', statusStart);
+    if (codeStart >= 0) status = response.substring(codeStart + 1, codeStart + 4).toInt();
+  }
+
+  Serial.printf("[%s] HTTPS status: %d\n", label, status);
+  return status >= 200 && status < 300;
+}
+// ============================================================
 //   FUNCTION: Send GPS data to Supabase via LTE
 // ============================================================
 void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites) {
@@ -192,83 +348,8 @@ void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites)
   String body;
   serializeJson(doc, body);
 
-  Serial.println("[LTE] Sending via AT HTTPS: " + body);
-
-  // Close any previous HTTP session
-  SerialAT.println("AT+HTTPTERM");
-  delay(1000);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Initialize HTTP
-  SerialAT.println("AT+HTTPINIT");
-  delay(1000);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set SSL
-  SerialAT.println("AT+HTTPSSL=1");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set URL
-  SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/location\"");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set content type
-  SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
-
-  // Set data length and timeout
-  SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
-  delay(500);
-
-  // Wait for DOWNLOAD prompt
-  String prompt = "";
-  long timeout = millis() + 5000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      prompt += (char)SerialAT.read();
-      if (prompt.indexOf("DOWNLOAD") >= 0) break;
-    }
-  }
-  Serial.println("[LTE] Prompt: " + prompt);
-
-  // Send JSON body
-  SerialAT.print(body);
-  delay(2000);
-
-  // Execute POST
-  SerialAT.println("AT+HTTPACTION=1");
-  delay(500);
-
-  // Wait for response
-  String response = "";
-  timeout = millis() + 10000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      response += (char)SerialAT.read();
-      if (response.indexOf("+HTTPACTION") >= 0) break;
-    }
-  }
-  Serial.println("[LTE] Response: " + response);
-
-  // Read response body
-  SerialAT.println("AT+HTTPREAD");
-  delay(1000);
-  String responseBody = "";
-  timeout = millis() + 3000;
-  while (millis() < timeout) {
-    if (SerialAT.available()) {
-      responseBody += (char)SerialAT.read();
-    }
-  }
-  Serial.println("[LTE] Body: " + responseBody);
-
-  // Terminate HTTP
-  SerialAT.println("AT+HTTPTERM");
-  delay(500);
-  while (SerialAT.available()) SerialAT.read();
+  Serial.println("[LTE] Sending via mbedTLS HTTPS: " + body);
+  postJsonViaLTETls("/api/location", body, "LTE");
 }
 // ============================================================
 //   FUNCTION: Send GPS data to Supabase via WiFi
@@ -390,58 +471,7 @@ void sendWiFiTrilateration() {
 
   // Send via LTE if available otherwise WiFi
   if (useLTE) {
-    // Use AT command HTTP to send trilateration data via LTE
-    SerialAT.println("AT+HTTPTERM");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPINIT");
-    delay(1000);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPSSL=1");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/wifi-location\"");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPPARA=\"CONTENT\",\"application/json\"");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
-
-    SerialAT.println("AT+HTTPDATA=" + String(body.length()) + ",10000");
-    delay(500);
-
-    String prompt = "";
-    long timeout = millis() + 5000;
-    while (millis() < timeout) {
-      if (SerialAT.available()) {
-        prompt += (char)SerialAT.read();
-        if (prompt.indexOf("DOWNLOAD") >= 0) break;
-      }
-    }
-
-    SerialAT.print(body);
-    delay(2000);
-
-    SerialAT.println("AT+HTTPACTION=1");
-    delay(500);
-
-    String httpResponse = "";
-    timeout = millis() + 10000;
-    while (millis() < timeout) {
-      if (SerialAT.available()) {
-        httpResponse += (char)SerialAT.read();
-        if (httpResponse.indexOf("+HTTPACTION") >= 0) break;
-      }
-    }
-    Serial.println("[WiFi-Tri] LTE Response: " + httpResponse);
-
-    SerialAT.println("AT+HTTPTERM");
-    delay(500);
-    while (SerialAT.available()) SerialAT.read();
+    postJsonViaLTETls("/api/wifi-location", body, "WiFi-Tri");
 
   } else if (useWiFi) {
     // Reconnect to WiFi for sending
