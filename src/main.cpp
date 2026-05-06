@@ -209,6 +209,11 @@ void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites)
   delay(500);
   while (SerialAT.available()) SerialAT.read();
 
+  // ADD THIS - disable SSL certificate verification
+SerialAT.println("AT+HTTPPARA=\"SSLCFG\",0");
+delay(500);
+while (SerialAT.available()) SerialAT.read();
+
   // Set URL
   SerialAT.println("AT+HTTPPARA=\"URL\",\"https://diplomatic-alignment-production-ebb5.up.railway.app/api/location\"");
   delay(500);
@@ -236,7 +241,7 @@ void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites)
 
   // Send JSON body
   SerialAT.print(body);
-  delay(2000);
+  delay(3000);
 
   // Execute POST
   SerialAT.println("AT+HTTPACTION=1");
@@ -296,7 +301,7 @@ void sendViaWiFi(float lat, float lng, float spd, float altitude, int satellites
   http.post("/api/location");
   http.sendHeader("Host",           "diplomatic-alignment-production-ebb5.up.railway.app");
   http.sendHeader("Content-Type",   "application/json");
-  http.sendHeader("Content-Length", String(body.length()));
+  http.sendHeader("Content-Length", body.length());
   http.beginBody();
   http.print(body);
   http.endRequest();
