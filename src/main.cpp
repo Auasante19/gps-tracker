@@ -11,6 +11,7 @@
 #include <WiFiClientSecure.h>
 #include <SSLClientESP32.h>
 #include <sys/time.h>
+#include <time.h>
 
 // ============================================================
 //   CONFIGURATION — fill in your details here
@@ -96,6 +97,10 @@ bool useWiFi = false;
 
 unsigned long lastUpdate = 0;
 
+bool hasValidSystemTime() {
+  return time(nullptr) >= 1704067200;  // 2024-01-01T00:00:00Z
+}
+
 // ============================================================
 //   FUNCTION: Convert UTC date to Unix epoch days
 // ============================================================
@@ -147,6 +152,37 @@ bool syncEspClockFromModem() {
   Serial.printf("[TIME] ESP32 clock set: %04d-%02d-%02d %02d:%02d:%02d TZ %.2f\n",
                 year, month, day, hour, minute, second, timezone);
   return true;
+}
+
+// ============================================================
+//   FUNCTION: Sync ESP32 clock over WiFi
+// ============================================================
+bool syncEspClockFromWiFi() {
+  if (hasValidSystemTime()) return true;
+
+  Serial.println("[TIME] Syncing ESP32 clock over WiFi...");
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+
+  unsigned long deadline = millis() + 15000;
+  while (millis() < deadline) {
+    if (hasValidSystemTime()) {
+      time_t now = time(nullptr);
+      struct tm timeInfo;
+      gmtime_r(&now, &timeInfo);
+      Serial.printf("[TIME] WiFi clock set: %04d-%02d-%02d %02d:%02d:%02d UTC\n",
+                    timeInfo.tm_year + 1900,
+                    timeInfo.tm_mon + 1,
+                    timeInfo.tm_mday,
+                    timeInfo.tm_hour,
+                    timeInfo.tm_min,
+                    timeInfo.tm_sec);
+      return true;
+    }
+    delay(500);
+  }
+
+  Serial.println("[TIME] WiFi clock sync timed out");
+  return false;
 }
 
 // ============================================================
@@ -211,6 +247,7 @@ bool connectWiFi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n[WiFi] Connected! IP: " + WiFi.localIP().toString());
+    syncEspClockFromWiFi();
     return true;
   }
 
@@ -355,8 +392,10 @@ void sendViaLTE(float lat, float lng, float spd, float altitude, int satellites)
 //   FUNCTION: Send GPS data to Supabase via WiFi
 // ============================================================
 void sendViaWiFi(float lat, float lng, float spd, float altitude, int satellites) {
+  syncEspClockFromWiFi();
+
   WiFiClientSecure client;
-  client.setInsecure();
+  client.setCACert(SERVER_ROOT_CA);
 
   HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
 
@@ -482,8 +521,15 @@ void sendWiFiTrilateration() {
       attempts++;
     }
 
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[WiFi-Tri] Failed to reconnect for HTTPS POST");
+      return;
+    }
+
+    syncEspClockFromWiFi();
+
     WiFiClientSecure client;
-    client.setInsecure();
+    client.setCACert(SERVER_ROOT_CA);
     HttpClient http(client, "diplomatic-alignment-production-ebb5.up.railway.app", 443);
 
     http.beginRequest();
